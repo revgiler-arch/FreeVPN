@@ -256,7 +256,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         addKey.setVisibility(isVless() ? View.VISIBLE : View.GONE);
         countrySpinner.setVisibility(isVless() ? View.GONE : View.VISIBLE);
         footer.setText(isVless()
-                ? "Бесплатные ключи: github.com/igareck/vpn-configs-for-russia · свой сервер: «＋ Ключ»"
+                ? "Бесплатные ключи: github.com/igareck/vpn-configs-for-russia · свой ключ или подписка: «＋ Ключ»"
                 : "Бесплатные серверы добровольцев VPN Gate (vpngate.net)");
         statusText.setText("Не подключено");
         trafficText.setText("");
@@ -302,7 +302,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             TextView ping = v.findViewById(R.id.fv_row_ping);
             if (isVless()) {
                 XrayLink k = keys.get(position);
-                flag.setText(k.userKey ? "⭐" : "🔑");
+                flag.setText(k.userKey() ? "⭐" : "🔑");
                 flag.setVisibility(startsWithEmoji(k.name) ? View.GONE : View.VISIBLE);
                 title.setText(k.name);
                 sub.setText(k.subtitle());
@@ -358,10 +358,28 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     private boolean onRowLongClicked(int position) {
         if (!isVless()) return false;
         XrayLink k = keys.get(position);
-        if (!k.userKey) {
-            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("key", k.link));
-            Toast.makeText(this, "Ключ скопирован", Toast.LENGTH_SHORT).show();
+        if (k.source == XrayLink.Source.SUBSCRIPTION) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Подписка")
+                    .setMessage(k.subscription)
+                    .setPositiveButton("Удалить подписку", (d, w) -> {
+                        XrayRepo.removeSubscription(this, k.subscription);
+                        List<XrayLink> keep = new ArrayList<>();
+                        for (XrayLink x : keys) if (!k.subscription.equals(x.subscription)) keep.add(x);
+                        keys.clear();
+                        keys.addAll(keep);
+                        working.retainAll(keep);
+                        if (selectedKey != null && !keep.contains(selectedKey)) selectedKey = null;
+                        adapter.notifyDataSetChanged();
+                        updateHint(false);
+                    })
+                    .setNeutralButton("Копировать ключ", (d, w) -> copyKey(k))
+                    .setNegativeButton("Отмена", null)
+                    .show();
+            return true;
+        }
+        if (!k.userKey()) {
+            copyKey(k);
             return true;
         }
         new AlertDialog.Builder(this)
@@ -376,6 +394,12 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                 .setNegativeButton("Отмена", null)
                 .show();
         return true;
+    }
+
+    private void copyKey(XrayLink k) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("key", k.link));
+        Toast.makeText(this, "Ключ скопирован", Toast.LENGTH_SHORT).show();
     }
 
     private void updateHint(boolean fromCache) {
@@ -421,7 +445,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
 
     private void showAddKeyDialog() {
         EditText input = new EditText(this);
-        input.setHint("vless://… или trojan://…");
+        input.setHint("vless:// vmess:// ss:// trojan://\nили ссылка подписки https://…");
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         input.setMinLines(3);
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -430,19 +454,26 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             if (clip != null && clip.toString().contains("://")) input.setText(clip);
         }
         new AlertDialog.Builder(this)
-                .setTitle("Добавить свой ключ")
-                .setMessage("Вставь ссылку от своего сервера. Можно несколько, каждую с новой строки.")
+                .setTitle("Добавить ключ или подписку")
+                .setMessage("Ключ — ссылка на один сервер (свой сервер или из бота).\n"
+                        + "Подписка — ссылка https://… от VPN-сервиса: все её ключи загрузятся и будут обновляться сами.")
                 .setView(input)
                 .setPositiveButton("Добавить", (d, w) -> {
-                    int n = XrayRepo.addUserKeys(this, input.getText().toString());
-                    if (n == 0) {
-                        Toast.makeText(this, "Не похоже на ключ vless:// или trojan://", Toast.LENGTH_LONG).show();
+                    int[] n = XrayRepo.addUserInput(this, input.getText().toString());
+                    if (n[0] == 0 && n[1] == 0) {
+                        Toast.makeText(this, "Не нашёл ни ключа, ни ссылки подписки", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    Toast.makeText(this, "Добавлено ключей: " + n, Toast.LENGTH_SHORT).show();
+                    if (n[1] > 0) {
+                        Toast.makeText(this, "Подписка добавлена, загружаю ключи…", Toast.LENGTH_SHORT).show();
+                        selectedKey = null;
+                        loadKeys();
+                        return;
+                    }
+                    Toast.makeText(this, "Добавлено ключей: " + n[0], Toast.LENGTH_SHORT).show();
                     List<XrayLink> mine = XrayRepo.userKeys(this);
                     List<XrayLink> rest = new ArrayList<>();
-                    for (XrayLink k : keys) if (!k.userKey) rest.add(k);
+                    for (XrayLink k : keys) if (!k.userKey()) rest.add(k);
                     keys.clear();
                     keys.addAll(mine);
                     keys.addAll(rest);
@@ -481,7 +512,9 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         }
         List<XrayLink> candidates = new ArrayList<>();
         if (selectedKey != null && !triedThisRound.contains(selectedKey)) candidates.add(selectedKey);
-        for (XrayLink k : keys) if (k.userKey && !candidates.contains(k) && !triedThisRound.contains(k)) candidates.add(k);
+        for (XrayLink k : keys) {
+            if (k.source != XrayLink.Source.FREE && !candidates.contains(k) && !triedThisRound.contains(k)) candidates.add(k);
+        }
         for (XrayLink k : keys) {
             if (candidates.size() >= MAX_CANDIDATES) break;
             if (!candidates.contains(k) && !triedThisRound.contains(k) && k.delayMs >= 0) candidates.add(k);

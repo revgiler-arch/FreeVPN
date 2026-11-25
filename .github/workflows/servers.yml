@@ -30,8 +30,8 @@ jobs:
           # Free VLESS/Trojan keys picked for Russian mobile networks (github.com/igareck/vpn-configs-for-russia)
           BASE=https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main
           : > out/vless.txt
-          for f in Vless-Reality-White-Lists-Rus-Mobile.txt BLACK_VLESS_RUS_mobile.txt; do
-            curl -fsSL --retry 3 --max-time 60 "$BASE/$f" >> out/vless.txt || echo "skip $f"
+          for f in Vless-Reality-White-Lists-Rus-Mobile.txt BLACK_VLESS_RUS_mobile.txt "BLACK_SS+All_RUS.txt"; do
+            curl -fsSL --retry 3 --max-time 60 "$BASE/${f//+/%2B}" >> out/vless.txt || echo "skip $f"
             echo >> out/vless.txt
           done
           echo "Keys: $(grep -c '://' out/vless.txt || true)"
