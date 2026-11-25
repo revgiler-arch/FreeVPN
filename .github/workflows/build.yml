@@ -61,12 +61,20 @@ jobs:
           [ -z "$APK" ] && APK=$(find main/build/outputs/apk -name "*.apk" | head -n1)
           echo "Found: $APK"
           cp "$APK" out/FreeVPN.apk
+          # version.json lets the app find out that a newer build exists (self-update)
+          CODE=$(grep -m1 -oP 'versionCode = \K[0-9]+' main/build.gradle.kts)
+          NAME=$(grep -m1 -oP 'versionName = "\K[^"]+' main/build.gradle.kts)
+          NOTES=$(git log -1 --format=%s | sed 's/"/\\"/g')
+          printf '{"versionCode": %s, "versionName": "%s", "notes": "%s"}\n' "$CODE" "$NAME" "$NOTES" > out/version.json
+          cat out/version.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: FreeVPN-apk
-          path: out/FreeVPN.apk
+          path: |
+            out/FreeVPN.apk
+            out/version.json
 
       - name: Publish to "latest" release (easy download from the phone)
         uses: softprops/action-gh-release@v2
@@ -75,7 +83,9 @@ jobs:
           name: FreeVPN (последняя сборка)
           prerelease: false
           make_latest: true
-          files: out/FreeVPN.apk
+          files: |
+            out/FreeVPN.apk
+            out/version.json
           body: |
             Автосборка из ветки main, коммит ${{ github.sha }}.
             Скачай FreeVPN.apk на телефон и установи (разреши установку из неизвестных источников).

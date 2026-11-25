@@ -187,6 +187,10 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             return true;
         });
 
+        // Tap the title = check for an update now; also checked automatically on start.
+        findViewById(R.id.fv_title).setOnClickListener(v -> Updater.check(this, true));
+        Updater.check(this, false);
+
         askNotificationPermission();
         // If a VLESS connection is already running, open in that mode.
         if (XrayVpnService.getState() != XrayVpnService.State.DISCONNECTED) mode = MODE_VLESS;
@@ -255,9 +259,10 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         tabGate.setSelected(!isVless());
         addKey.setVisibility(isVless() ? View.VISIBLE : View.GONE);
         countrySpinner.setVisibility(isVless() ? View.GONE : View.VISIBLE);
-        footer.setText(isVless()
+        footer.setText((isVless()
                 ? "Бесплатные ключи: github.com/igareck/vpn-configs-for-russia · свой ключ или подписка: «＋ Ключ»"
-                : "Бесплатные серверы добровольцев VPN Gate (vpngate.net)");
+                : "Бесплатные серверы добровольцев VPN Gate (vpngate.net)") + "\nВерсия " + versionName()
+                + " · нажми на «FreeVPN», чтобы проверить обновления");
         statusText.setText("Не подключено");
         trafficText.setText("");
         renderButton();
@@ -989,6 +994,14 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             VpnServer s = gateWantsConnection && currentServer != null ? currentServer : selectedServer;
             serverInfo.setText(s == null ? "Сервер: автовыбор лучшего"
                     : s.flag() + " " + s.countryLong + " · " + s.hostName + " · " + s.speedText());
+        }
+    }
+
+    private String versionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
         }
     }
 
