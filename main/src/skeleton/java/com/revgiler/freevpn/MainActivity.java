@@ -2,6 +2,7 @@ package com.revgiler.freevpn;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
@@ -18,12 +19,14 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteException;
+import android.text.InputType;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -31,13 +34,17 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.StringReader;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import de.blinkt.openvpn.R;
 import de.blinkt.openvpn.VpnProfile;
@@ -49,47 +56,66 @@ import de.blinkt.openvpn.core.OpenVPNService;
 import de.blinkt.openvpn.core.ProfileManager;
 import de.blinkt.openvpn.core.VPNLaunchHelper;
 import de.blinkt.openvpn.core.VpnStatus;
+import libv2ray.Libv2ray;
 
 /**
- * FreeVPN main screen: list of free VPN Gate servers, one big connect button,
- * automatic switch to the next server when a free server does not answer.
+ * FreeVPN main screen. Two modes:
+ *  - VLESS (Xray): free VLESS/Trojan keys (or your own server) – disguised as HTTPS, works on 4G
+ *  - VPN Gate (OpenVPN): free volunteer servers – fine on Wi-Fi, often blocked on mobile networks
  */
 public class MainActivity extends Activity implements VpnStatus.StateListener, VpnStatus.ByteCountListener,
-        VpnStatus.LogListener {
+        VpnStatus.LogListener, XrayVpnService.Listener {
 
+    private static final String MODE_VLESS = "vless", MODE_GATE = "gate";
     private static final String PROFILE_PREFIX = "FreeVPN: ";
     private static final int REQ_VPN_PERMISSION = 70;
     private static final int REQ_NOTIFICATIONS = 71;
-    /** How long a free server gets to connect before we try the next one. */
+    // VPN Gate
     private static final long ATTEMPT_TIMEOUT_MS = 20_000;
-    private static final int MAX_ATTEMPTS = 8;
-    /** If the server has not answered at all after this long, it is probably unreachable. */
     private static final long NO_REPLY_TIMEOUT_MS = 10_000;
+    private static final int MAX_ATTEMPTS = 8;
+    // VLESS
+    private static final int TEST_THREADS = 12;
+    private static final int MAX_CANDIDATES = 60;
     private static final int LOG_LINES = 120;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private ExecutorService testers;
 
     private View connectButton;
-    private TextView connectText, statusText, serverInfo, trafficText, listHint;
+    private TextView connectText, statusText, serverInfo, trafficText, listHint, tabVless, tabGate, addKey, footer;
     private Spinner countrySpinner;
     private ListView serverList;
     private TextView logView, logToggle;
     private ScrollView logScroll;
-    private final java.util.ArrayDeque<String> logLines = new java.util.ArrayDeque<>();
+    private final ArrayDeque<String> logLines = new ArrayDeque<>();
 
+    private String mode = MODE_VLESS;
+    private SharedPreferences prefs;
+
+    // ---- VPN Gate state
     private final List<VpnServer> allServers = new ArrayList<>();
     private final List<VpnServer> shownServers = new ArrayList<>();
-    private ServerAdapter adapter;
-    private String selectedCountry = null; // null = all countries
+    private String selectedCountry = null;
     private VpnServer selectedServer = null;
-
-    /** Servers still to try in the current connect attempt. */
     private final List<VpnServer> queue = new ArrayList<>();
     private VpnServer currentServer = null;
     private int attempts = 0;
-    private boolean userWantsConnection = false;
+    private boolean gateWantsConnection = false;
     private ConnectionStatus lastLevel = ConnectionStatus.LEVEL_NOTCONNECTED;
+
+    // ---- VLESS state
+    private final List<XrayLink> keys = new ArrayList<>();
+    private XrayLink selectedKey = null;
+    private XrayLink currentKey = null;
+    private boolean vlessWantsConnection = false;
+    private XrayVpnService.State xrayState = XrayVpnService.State.DISCONNECTED;
+    private final List<XrayLink> working = new ArrayList<>(); // tested OK, best first
+    private final List<XrayLink> triedThisRound = new ArrayList<>();
+    private int searchGeneration = 0;
+
+    private RowAdapter adapter;
 
     private IOpenVPNServiceInternal service;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
@@ -105,13 +131,13 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     };
 
     private final Runnable noReplyTimeout = () -> {
-        if (userWantsConnection && lastLevel == ConnectionStatus.LEVEL_CONNECTING_NO_SERVER_REPLY_YET) {
+        if (gateWantsConnection && lastLevel == ConnectionStatus.LEVEL_CONNECTING_NO_SERVER_REPLY_YET) {
             tryNextServer("Сервер недоступен");
         }
     };
 
     private final Runnable attemptTimeout = () -> {
-        if (userWantsConnection && lastLevel != ConnectionStatus.LEVEL_CONNECTED) {
+        if (gateWantsConnection && lastLevel != ConnectionStatus.LEVEL_CONNECTED) {
             tryNextServer("Сервер не ответил");
         }
     };
@@ -120,6 +146,8 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.freevpn_main);
+        prefs = getPreferences(MODE_PRIVATE);
+        mode = prefs.getString("mode", MODE_VLESS);
 
         connectButton = findViewById(R.id.fv_connect);
         connectText = findViewById(R.id.fv_connect_text);
@@ -129,9 +157,25 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         listHint = findViewById(R.id.fv_list_hint);
         countrySpinner = findViewById(R.id.fv_country);
         serverList = findViewById(R.id.fv_servers);
+        tabVless = findViewById(R.id.fv_tab_vless);
+        tabGate = findViewById(R.id.fv_tab_gate);
+        addKey = findViewById(R.id.fv_add_key);
+        footer = findViewById(R.id.fv_footer);
         logView = findViewById(R.id.fv_log);
         logToggle = findViewById(R.id.fv_log_toggle);
         logScroll = findViewById(R.id.fv_log_scroll);
+
+        adapter = new RowAdapter();
+        serverList.setAdapter(adapter);
+        serverList.setOnItemClickListener((parent, view, position, id) -> onRowClicked(position));
+        serverList.setOnItemLongClickListener((parent, view, position, id) -> onRowLongClicked(position));
+
+        connectButton.setOnClickListener(v -> onConnectClicked());
+        findViewById(R.id.fv_refresh).setOnClickListener(v -> loadCurrent());
+        addKey.setOnClickListener(v -> showAddKeyDialog());
+        tabVless.setOnClickListener(v -> switchMode(MODE_VLESS));
+        tabGate.setOnClickListener(v -> switchMode(MODE_GATE));
+
         logToggle.setOnClickListener(v -> {
             boolean show = logScroll.getVisibility() != View.VISIBLE;
             logScroll.setVisibility(show ? View.VISIBLE : View.GONE);
@@ -142,30 +186,11 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             copyLog();
             return true;
         });
-        logView.setOnLongClickListener(v -> {
-            copyLog();
-            return true;
-        });
-
-        adapter = new ServerAdapter();
-        serverList.setAdapter(adapter);
-        serverList.setOnItemClickListener((parent, view, position, id) -> {
-            VpnServer s = shownServers.get(position);
-            if (selectedServer != null && selectedServer.id().equals(s.id())) {
-                selectedServer = null; // tap again = back to automatic choice
-                serverList.clearChoices();
-            } else {
-                selectedServer = s;
-            }
-            adapter.notifyDataSetChanged();
-            updateServerInfo();
-        });
-
-        connectButton.setOnClickListener(v -> onConnectClicked());
-        findViewById(R.id.fv_refresh).setOnClickListener(v -> loadServers());
 
         askNotificationPermission();
-        loadServers();
+        // If a VLESS connection is already running, open in that mode.
+        if (XrayVpnService.getState() != XrayVpnService.State.DISCONNECTED) mode = MODE_VLESS;
+        applyMode(true);
     }
 
     @Override
@@ -176,11 +201,8 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
         VpnStatus.addStateListener(this);
         VpnStatus.addByteCountListener(this);
-        logLines.clear();
-        LogItem[] buffer = VpnStatus.getlogbuffer();
-        for (int i = Math.max(0, buffer.length - LOG_LINES); i < buffer.length; i++) addLogLine(buffer[i]);
-        renderLog();
         VpnStatus.addLogListener(this);
+        XrayVpnService.addListener(this);
     }
 
     @Override
@@ -188,6 +210,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         VpnStatus.removeStateListener(this);
         VpnStatus.removeByteCountListener(this);
         VpnStatus.removeLogListener(this);
+        XrayVpnService.removeListener(this);
         try {
             unbindService(serviceConnection);
         } catch (IllegalArgumentException ignored) {
@@ -200,10 +223,403 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     protected void onDestroy() {
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
+        if (testers != null) testers.shutdownNow();
         super.onDestroy();
     }
 
-    // ---------------------------------------------------------------- server list
+    // =================================================================== modes
+
+    private boolean isVless() {
+        return MODE_VLESS.equals(mode);
+    }
+
+    private boolean anythingActive() {
+        return gateWantsConnection || lastLevel == ConnectionStatus.LEVEL_CONNECTED
+                || vlessWantsConnection || xrayState != XrayVpnService.State.DISCONNECTED
+                && xrayState != XrayVpnService.State.FAILED;
+    }
+
+    private void switchMode(String newMode) {
+        if (newMode.equals(mode)) return;
+        if (anythingActive()) {
+            Toast.makeText(this, "Сначала отключись", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        mode = newMode;
+        prefs.edit().putString("mode", mode).apply();
+        applyMode(true);
+    }
+
+    private void applyMode(boolean load) {
+        tabVless.setSelected(isVless());
+        tabGate.setSelected(!isVless());
+        addKey.setVisibility(isVless() ? View.VISIBLE : View.GONE);
+        countrySpinner.setVisibility(isVless() ? View.GONE : View.VISIBLE);
+        footer.setText(isVless()
+                ? "Бесплатные ключи: github.com/igareck/vpn-configs-for-russia · свой сервер: «＋ Ключ»"
+                : "Бесплатные серверы добровольцев VPN Gate (vpngate.net)");
+        statusText.setText("Не подключено");
+        trafficText.setText("");
+        renderButton();
+        updateServerInfo();
+        adapter.notifyDataSetChanged();
+        if (load) {
+            boolean empty = isVless() ? keys.isEmpty() : allServers.isEmpty();
+            if (empty) loadCurrent();
+            else updateHint(false);
+        }
+    }
+
+    private void loadCurrent() {
+        if (isVless()) loadKeys();
+        else loadServers();
+    }
+
+    // =================================================================== list
+
+    private class RowAdapter extends BaseAdapter {
+        @Override
+        public int getCount() {
+            return isVless() ? keys.size() : shownServers.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return isVless() ? keys.get(position) : shownServers.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View v, ViewGroup parent) {
+            if (v == null) v = LayoutInflater.from(MainActivity.this).inflate(R.layout.freevpn_server_row, parent, false);
+            TextView flag = v.findViewById(R.id.fv_row_flag);
+            TextView title = v.findViewById(R.id.fv_row_title);
+            TextView sub = v.findViewById(R.id.fv_row_sub);
+            TextView ping = v.findViewById(R.id.fv_row_ping);
+            if (isVless()) {
+                XrayLink k = keys.get(position);
+                flag.setText(k.userKey ? "⭐" : "🔑");
+                flag.setVisibility(startsWithEmoji(k.name) ? View.GONE : View.VISIBLE);
+                title.setText(k.name);
+                sub.setText(k.subtitle());
+                if (k.delayMs > 0) {
+                    ping.setText(k.delayMs + " мс");
+                    ping.setTextColor(Color.parseColor("#2ECC71"));
+                } else if (k.delayMs < 0) {
+                    ping.setText("✕");
+                    ping.setTextColor(Color.parseColor("#E5534B"));
+                } else {
+                    ping.setText("—");
+                    ping.setTextColor(Color.parseColor("#8B93A1"));
+                }
+                boolean sel = selectedKey != null && selectedKey.id().equals(k.id());
+                boolean act = currentKey != null && currentKey.id().equals(k.id())
+                        && xrayState == XrayVpnService.State.CONNECTED;
+                v.setActivated(sel || act);
+            } else {
+                VpnServer s = shownServers.get(position);
+                flag.setVisibility(View.VISIBLE);
+                flag.setText(s.flag());
+                title.setText(s.countryLong + " · " + s.hostName);
+                sub.setText(s.speedText() + " · сессий: " + s.sessions);
+                ping.setText(s.pingText());
+                ping.setTextColor(Color.parseColor("#2ECC71"));
+                boolean selected = selectedServer != null && selectedServer.id().equals(s.id());
+                boolean active = currentServer != null && currentServer.id().equals(s.id())
+                        && lastLevel == ConnectionStatus.LEVEL_CONNECTED;
+                v.setActivated(selected || active);
+            }
+            return v;
+        }
+    }
+
+    private static boolean startsWithEmoji(String s) {
+        if (s == null || s.isEmpty()) return false;
+        int cp = s.codePointAt(0);
+        return cp >= 0x1F000 || (cp >= 0x2600 && cp <= 0x27BF);
+    }
+
+    private void onRowClicked(int position) {
+        if (isVless()) {
+            XrayLink k = keys.get(position);
+            selectedKey = (selectedKey != null && selectedKey.id().equals(k.id())) ? null : k;
+        } else {
+            VpnServer s = shownServers.get(position);
+            selectedServer = (selectedServer != null && selectedServer.id().equals(s.id())) ? null : s;
+        }
+        adapter.notifyDataSetChanged();
+        updateServerInfo();
+    }
+
+    private boolean onRowLongClicked(int position) {
+        if (!isVless()) return false;
+        XrayLink k = keys.get(position);
+        if (!k.userKey) {
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("key", k.link));
+            Toast.makeText(this, "Ключ скопирован", Toast.LENGTH_SHORT).show();
+            return true;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Удалить свой ключ?")
+                .setMessage(k.name)
+                .setPositiveButton("Удалить", (d, w) -> {
+                    XrayRepo.removeUserKey(this, k.link);
+                    keys.remove(k);
+                    if (selectedKey == k) selectedKey = null;
+                    adapter.notifyDataSetChanged();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+        return true;
+    }
+
+    private void updateHint(boolean fromCache) {
+        if (isVless()) {
+            int ok = 0;
+            for (XrayLink k : keys) if (k.delayMs > 0) ok++;
+            listHint.setText((fromCache ? "Нет связи — показан прошлый список. " : "")
+                    + "Ключей: " + keys.size() + (ok > 0 ? ", рабочих: " + ok : "")
+                    + ". «Подключить» сам найдёт рабочий ключ.");
+        } else {
+            listHint.setText((fromCache ? "Нет связи с VPN Gate — показан прошлый список. " : "")
+                    + "Серверов: " + shownServers.size()
+                    + ". Нажми на сервер, чтобы выбрать, или просто «Подключить».");
+        }
+    }
+
+    // =================================================================== VLESS: keys
+
+    private void loadKeys() {
+        listHint.setText("Загрузка ключей…");
+        io.execute(() -> {
+            try {
+                XrayRepo.Result r = XrayRepo.load(getApplicationContext(), (n, total) ->
+                        ui.post(() -> listHint.setText("Загрузка ключей… (источник " + n + " из " + total + ")")));
+                ui.post(() -> {
+                    keys.clear();
+                    keys.addAll(r.links);
+                    working.clear();
+                    selectedKey = null;
+                    if (isVless()) {
+                        adapter.notifyDataSetChanged();
+                        updateHint(r.fromCache);
+                    }
+                });
+            } catch (Throwable e) {
+                ui.post(() -> {
+                    if (isVless()) listHint.setText("Не удалось загрузить ключи: " + e.getMessage()
+                            + "\nНажми «Обновить» или добавь свой ключ.");
+                });
+            }
+        });
+    }
+
+    private void showAddKeyDialog() {
+        EditText input = new EditText(this);
+        input.setHint("vless://… или trojan://…");
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setMinLines(3);
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0) {
+            CharSequence clip = cm.getPrimaryClip().getItemAt(0).getText();
+            if (clip != null && clip.toString().contains("://")) input.setText(clip);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Добавить свой ключ")
+                .setMessage("Вставь ссылку от своего сервера. Можно несколько, каждую с новой строки.")
+                .setView(input)
+                .setPositiveButton("Добавить", (d, w) -> {
+                    int n = XrayRepo.addUserKeys(this, input.getText().toString());
+                    if (n == 0) {
+                        Toast.makeText(this, "Не похоже на ключ vless:// или trojan://", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    Toast.makeText(this, "Добавлено ключей: " + n, Toast.LENGTH_SHORT).show();
+                    List<XrayLink> mine = XrayRepo.userKeys(this);
+                    List<XrayLink> rest = new ArrayList<>();
+                    for (XrayLink k : keys) if (!k.userKey) rest.add(k);
+                    keys.clear();
+                    keys.addAll(mine);
+                    keys.addAll(rest);
+                    selectedKey = mine.isEmpty() ? null : mine.get(mine.size() - 1);
+                    adapter.notifyDataSetChanged();
+                    updateServerInfo();
+                    updateHint(false);
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    // =================================================================== VLESS: connect
+
+    private void startVless() {
+        if (keys.isEmpty()) {
+            Toast.makeText(this, "Ключи ещё не загружены", Toast.LENGTH_SHORT).show();
+            loadKeys();
+            return;
+        }
+        vlessWantsConnection = true;
+        triedThisRound.clear();
+        renderButton();
+        searchAndConnect();
+    }
+
+    /** Test keys in parallel; connect to the first one that answers. */
+    private void searchAndConnect() {
+        if (!vlessWantsConnection) return;
+        // Already-proven keys first.
+        for (XrayLink w : new ArrayList<>(working)) {
+            if (!triedThisRound.contains(w)) {
+                connectKey(w);
+                return;
+            }
+        }
+        List<XrayLink> candidates = new ArrayList<>();
+        if (selectedKey != null && !triedThisRound.contains(selectedKey)) candidates.add(selectedKey);
+        for (XrayLink k : keys) if (k.userKey && !candidates.contains(k) && !triedThisRound.contains(k)) candidates.add(k);
+        for (XrayLink k : keys) {
+            if (candidates.size() >= MAX_CANDIDATES) break;
+            if (!candidates.contains(k) && !triedThisRound.contains(k) && k.delayMs >= 0) candidates.add(k);
+        }
+        if (candidates.isEmpty()) {
+            vlessWantsConnection = false;
+            statusText.setText("Рабочий ключ не найден");
+            serverInfo.setText("Нажми «Обновить» и попробуй ещё раз, или добавь свой ключ");
+            renderButton();
+            return;
+        }
+
+        final int gen = ++searchGeneration;
+        final int total = candidates.size();
+        final AtomicInteger done = new AtomicInteger();
+        final AtomicBoolean found = new AtomicBoolean(false);
+        statusText.setText("Ищу рабочий ключ… 0 из " + total);
+        serverInfo.setText("Проверяю бесплатные ключи");
+        if (testers != null) testers.shutdownNow();
+        testers = Executors.newFixedThreadPool(TEST_THREADS);
+        for (XrayLink k : candidates) {
+            testers.execute(() -> {
+                if (found.get() || gen != searchGeneration) return;
+                long delay;
+                try {
+                    delay = Libv2ray.measureOutboundDelay(XrayConfig.forTest(k), XrayConfig.TEST_URL);
+                } catch (Throwable e) {
+                    delay = -1;
+                }
+                final long d = delay > 0 ? delay : -1;
+                ui.post(() -> {
+                    if (gen != searchGeneration) return;
+                    k.delayMs = d;
+                    int n = done.incrementAndGet();
+                    if (d > 0 && !working.contains(k)) {
+                        working.add(k);
+                        Collections.sort(working, (a, b) -> Long.compare(a.delayMs, b.delayMs));
+                    }
+                    adapter.notifyDataSetChanged();
+                    if (!vlessWantsConnection) return;
+                    if (d > 0 && found.compareAndSet(false, true)) {
+                        connectKey(k);
+                    } else if (!found.get()) {
+                        statusText.setText("Ищу рабочий ключ… " + n + " из " + total);
+                        if (n == total) {
+                            for (XrayLink c : candidates) if (!triedThisRound.contains(c)) triedThisRound.add(c);
+                            vlessWantsConnection = false;
+                            statusText.setText("Ни один ключ не ответил");
+                            serverInfo.setText("Нажми «Обновить» — список меняется каждый час");
+                            renderButton();
+                        }
+                    }
+                });
+            });
+        }
+    }
+
+    private void connectKey(XrayLink k) {
+        if (!vlessWantsConnection) return;
+        triedThisRound.add(k);
+        currentKey = k;
+        try {
+            stopGateQuietly();
+            XrayVpnService.start(this, XrayConfig.forVpn(k), k.name);
+            statusText.setText("Подключение…");
+            updateServerInfo();
+        } catch (Exception e) {
+            working.remove(k);
+            searchAndConnect();
+        }
+    }
+
+    @Override
+    public void onXrayState(XrayVpnService.State state, String message) {
+        ui.post(() -> {
+            xrayState = state;
+            if (!isVless()) return;
+            switch (state) {
+                case CONNECTING:
+                    statusText.setText(message);
+                    break;
+                case CONNECTED:
+                    vlessWantsConnection = true;
+                    if (currentKey == null) currentKey = findKeyByName(XrayVpnService.getServerName());
+                    statusText.setText("✅ Подключено · " + message);
+                    break;
+                case FAILED:
+                    if (currentKey != null) {
+                        working.remove(currentKey);
+                        currentKey.delayMs = -1;
+                    }
+                    if (vlessWantsConnection) {
+                        Toast.makeText(this, "Ключ не заработал (" + message + "), пробую другой…",
+                                Toast.LENGTH_SHORT).show();
+                        searchAndConnect();
+                    } else {
+                        statusText.setText("Ошибка: " + message);
+                    }
+                    break;
+                case DISCONNECTED:
+                    vlessWantsConnection = false;
+                    statusText.setText("Не подключено");
+                    trafficText.setText("");
+                    break;
+            }
+            renderButton();
+            updateServerInfo();
+            adapter.notifyDataSetChanged();
+        });
+    }
+
+    @Override
+    public void onXrayTraffic(long down, long up) {
+        ui.post(() -> {
+            if (isVless() && xrayState == XrayVpnService.State.CONNECTED) {
+                trafficText.setText("↓ " + human(down) + "   ↑ " + human(up));
+            }
+        });
+    }
+
+    private XrayLink findKeyByName(String name) {
+        for (XrayLink k : keys) if (k.name.equals(name)) return k;
+        return null;
+    }
+
+    private void stopVless() {
+        vlessWantsConnection = false;
+        searchGeneration++;
+        if (testers != null) testers.shutdownNow();
+        XrayVpnService.stop(this);
+        statusText.setText("Отключение…");
+        renderButton();
+        if (xrayState == XrayVpnService.State.DISCONNECTED || xrayState == XrayVpnService.State.FAILED) {
+            statusText.setText("Не подключено");
+        }
+    }
+
+    // =================================================================== VPN Gate: server list
 
     private void loadServers() {
         listHint.setText("Загрузка серверов…");
@@ -214,15 +630,17 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                 ui.post(() -> {
                     allServers.clear();
                     allServers.addAll(r.servers);
-                    setupCountries();
-                    applyFilter();
-                    listHint.setText((r.fromCache ? "Нет связи с VPN Gate — показан прошлый список. " : "")
-                            + "Серверов: " + shownServers.size()
-                            + ". Нажми на сервер, чтобы выбрать, или просто «Подключить» — выберу лучший.");
+                    if (!isVless()) {
+                        setupCountries();
+                        applyFilter();
+                        updateHint(r.fromCache);
+                    }
                 });
             } catch (Throwable e) {
-                ui.post(() -> listHint.setText("Не удалось загрузить список: " + e.getMessage()
-                        + "\nПроверь интернет и нажми «Обновить»."));
+                ui.post(() -> {
+                    if (!isVless()) listHint.setText("Не удалось загрузить список: " + e.getMessage()
+                            + "\nПроверь интернет и нажми «Обновить».");
+                });
             }
         });
     }
@@ -285,48 +703,17 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         updateServerInfo();
     }
 
-    private class ServerAdapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return shownServers.size();
-        }
-
-        @Override
-        public Object getItem(int position) {
-            return shownServers.get(position);
-        }
-
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public View getView(int position, View v, ViewGroup parent) {
-            if (v == null) v = LayoutInflater.from(MainActivity.this).inflate(R.layout.freevpn_server_row, parent, false);
-            VpnServer s = shownServers.get(position);
-            ((TextView) v.findViewById(R.id.fv_row_flag)).setText(s.flag());
-            ((TextView) v.findViewById(R.id.fv_row_title)).setText(s.countryLong + " · " + s.hostName);
-            ((TextView) v.findViewById(R.id.fv_row_sub)).setText(s.speedText() + " · сессий: " + s.sessions);
-            ((TextView) v.findViewById(R.id.fv_row_ping)).setText(s.pingText());
-            boolean selected = selectedServer != null && selectedServer.id().equals(s.id());
-            boolean active = currentServer != null && currentServer.id().equals(s.id())
-                    && lastLevel == ConnectionStatus.LEVEL_CONNECTED;
-            v.setActivated(selected || active);
-            return v;
-        }
-    }
-
-    // ---------------------------------------------------------------- connecting
+    // =================================================================== connect button
 
     private void onConnectClicked() {
-        if (userWantsConnection || lastLevel == ConnectionStatus.LEVEL_CONNECTED) {
-            disconnect();
-            return;
-        }
-        if (allServers.isEmpty()) {
-            Toast.makeText(this, "Список серверов ещё не загружен", Toast.LENGTH_SHORT).show();
-            loadServers();
+        if (isVless()) {
+            if (vlessWantsConnection || xrayState == XrayVpnService.State.CONNECTED
+                    || xrayState == XrayVpnService.State.CONNECTING) {
+                stopVless();
+                return;
+            }
+        } else if (gateWantsConnection || lastLevel == ConnectionStatus.LEVEL_CONNECTED) {
+            disconnectGate();
             return;
         }
         Intent permission = VpnService.prepare(this);
@@ -337,7 +724,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                 Toast.makeText(this, "Android не дал открыть запрос VPN", Toast.LENGTH_LONG).show();
             }
         } else {
-            startConnecting();
+            startSelectedMode();
         }
     }
 
@@ -345,33 +732,46 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_VPN_PERMISSION) {
-            if (resultCode == RESULT_OK) startConnecting();
+            if (resultCode == RESULT_OK) startSelectedMode();
             else Toast.makeText(this, "Без разрешения VPN подключиться нельзя", Toast.LENGTH_LONG).show();
         }
     }
 
-    private void startConnecting() {
+    private void startSelectedMode() {
+        if (isVless()) startVless();
+        else startGate();
+    }
+
+    // =================================================================== VPN Gate: connect
+
+    private void startGate() {
+        if (allServers.isEmpty()) {
+            Toast.makeText(this, "Список серверов ещё не загружен", Toast.LENGTH_SHORT).show();
+            loadServers();
+            return;
+        }
+        XrayVpnService.stop(this);
         queue.clear();
         if (selectedServer != null) queue.add(selectedServer);
-        for (VpnServer s : shownServers) { // already sorted, best first
+        for (VpnServer s : shownServers) {
             if (queue.size() >= MAX_ATTEMPTS) break;
             if (!queue.contains(s)) queue.add(s);
         }
         attempts = 0;
-        userWantsConnection = true;
+        gateWantsConnection = true;
         tryNextServer(null);
     }
 
     private void tryNextServer(String reasonForSkip) {
         ui.removeCallbacks(attemptTimeout);
         ui.removeCallbacks(noReplyTimeout);
-        if (!userWantsConnection) return;
+        if (!gateWantsConnection) return;
         if (queue.isEmpty()) {
-            userWantsConnection = false;
-            stopVpnQuietly();
+            gateWantsConnection = false;
+            stopGateQuietly();
             statusText.setText("Не удалось подключиться");
-            serverInfo.setText("Попробуй другую страну или нажми «Обновить»");
-            renderButton(ConnectionStatus.LEVEL_NOTCONNECTED);
+            serverInfo.setText("На мобильном интернете попробуй режим VLESS");
+            renderButton();
             return;
         }
         if (reasonForSkip != null && currentServer != null) {
@@ -381,10 +781,10 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         currentServer = queue.remove(0);
         attempts++;
         try {
-            launch(currentServer);
+            launchGate(currentServer);
             statusText.setText("Подключение… (попытка " + attempts + ")");
             updateServerInfo();
-            renderButton(ConnectionStatus.LEVEL_START);
+            renderButton();
             ui.postDelayed(attemptTimeout, ATTEMPT_TIMEOUT_MS);
             ui.postDelayed(noReplyTimeout, NO_REPLY_TIMEOUT_MS);
         } catch (Exception e) {
@@ -392,14 +792,13 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         }
     }
 
-    private void launch(VpnServer s) throws Exception {
+    private void launchGate(VpnServer s) throws Exception {
         ConfigParser parser = new ConfigParser();
         parser.parseConfig(new StringReader(VpnGateApi.config(s)));
         VpnProfile profile = parser.convertProfile();
         profile.mName = PROFILE_PREFIX + s.countryLong + " " + s.hostName;
 
         ProfileManager pm = ProfileManager.getInstance(this);
-        // Keep only one FreeVPN profile so old servers don't pile up.
         for (VpnProfile old : new ArrayList<>(pm.getProfiles())) {
             if (old.mName != null && old.mName.startsWith(PROFILE_PREFIX)) pm.removeProfile(this, old);
         }
@@ -410,17 +809,18 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         VPNLaunchHelper.startOpenVpn(profile, getBaseContext(), "FreeVPN", true);
     }
 
-    private void disconnect() {
-        userWantsConnection = false;
+    private void disconnectGate() {
+        gateWantsConnection = false;
         queue.clear();
         ui.removeCallbacks(attemptTimeout);
         ui.removeCallbacks(noReplyTimeout);
-        stopVpnQuietly();
+        stopGateQuietly();
         statusText.setText("Отключение…");
+        renderButton();
     }
 
-    private void stopVpnQuietly() {
-        if (service != null) {
+    private void stopGateQuietly() {
+        if (service != null && (gateWantsConnection || lastLevel != ConnectionStatus.LEVEL_NOTCONNECTED)) {
             try {
                 service.stopVPN(false);
             } catch (RemoteException e) {
@@ -429,28 +829,28 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         }
     }
 
-    // ---------------------------------------------------------------- status from the VPN core
-
     @Override
     public void updateState(String state, String logmessage, int localizedResId, ConnectionStatus level, Intent intent) {
-        ui.post(() -> onState(level, localizedResId));
+        ui.post(() -> onGateState(level, localizedResId));
     }
 
-    private void onState(ConnectionStatus level, int resId) {
+    private void onGateState(ConnectionStatus level, int resId) {
         lastLevel = level;
+        if (isVless()) return;
         switch (level) {
             case LEVEL_CONNECTED:
                 ui.removeCallbacks(attemptTimeout);
+                ui.removeCallbacks(noReplyTimeout);
                 queue.clear();
-                userWantsConnection = true;
+                gateWantsConnection = true;
                 statusText.setText("✅ Подключено");
                 break;
             case LEVEL_AUTH_FAILED:
-                if (userWantsConnection) tryNextServer("Сервер отклонил вход");
+                if (gateWantsConnection) tryNextServer("Сервер отклонил вход");
                 else statusText.setText("Ошибка входа");
                 break;
             case LEVEL_NOTCONNECTED:
-                if (!userWantsConnection) {
+                if (!gateWantsConnection) {
                     statusText.setText("Не подключено");
                     trafficText.setText("");
                 }
@@ -462,7 +862,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                 statusText.setText("Пауза");
                 break;
             default:
-                if (userWantsConnection) {
+                if (gateWantsConnection) {
                     String detail = "";
                     if (resId != 0) {
                         try {
@@ -473,7 +873,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                     statusText.setText("Подключение… " + detail);
                 }
         }
-        renderButton(level);
+        renderButton();
         adapter.notifyDataSetChanged();
     }
 
@@ -481,7 +881,16 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     public void setConnectedVPN(String uuid) {
     }
 
-    // ---------------------------------------------------------------- log
+    @Override
+    public void updateByteCount(long in, long out, long diffIn, long diffOut) {
+        ui.post(() -> {
+            if (!isVless() && lastLevel == ConnectionStatus.LEVEL_CONNECTED) {
+                trafficText.setText("↓ " + human(in) + "   ↑ " + human(out));
+            }
+        });
+    }
+
+    // =================================================================== log (OpenVPN)
 
     @Override
     public void newLog(LogItem logItem) {
@@ -519,22 +928,17 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         }
     }
 
-    @Override
-    public void updateByteCount(long in, long out, long diffIn, long diffOut) {
-        ui.post(() -> {
-            if (lastLevel == ConnectionStatus.LEVEL_CONNECTED) {
-                trafficText.setText("↓ " + human(in) + "   ↑ " + human(out));
-            }
-        });
-    }
+    // =================================================================== helpers
 
-    // ---------------------------------------------------------------- helpers
-
-    private void renderButton(ConnectionStatus level) {
-        if (level == ConnectionStatus.LEVEL_CONNECTED) {
+    private void renderButton() {
+        boolean connected = isVless() ? xrayState == XrayVpnService.State.CONNECTED
+                : lastLevel == ConnectionStatus.LEVEL_CONNECTED;
+        boolean busy = isVless() ? vlessWantsConnection || xrayState == XrayVpnService.State.CONNECTING
+                : gateWantsConnection;
+        if (connected) {
             connectButton.setBackgroundResource(R.drawable.freevpn_button_on);
             connectText.setText("ОТКЛЮЧИТЬ");
-        } else if (userWantsConnection) {
+        } else if (busy) {
             connectButton.setBackgroundResource(R.drawable.freevpn_button_wait);
             connectText.setText("ОТМЕНА");
         } else {
@@ -544,11 +948,14 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     }
 
     private void updateServerInfo() {
-        VpnServer s = userWantsConnection && currentServer != null ? currentServer : selectedServer;
-        if (s == null) {
-            serverInfo.setText("Сервер: автовыбор лучшего");
+        if (isVless()) {
+            XrayLink k = (vlessWantsConnection || xrayState == XrayVpnService.State.CONNECTED) && currentKey != null
+                    ? currentKey : selectedKey;
+            serverInfo.setText(k == null ? "Ключ: автовыбор рабочего" : k.name + " · " + k.subtitle());
         } else {
-            serverInfo.setText(s.flag() + " " + s.countryLong + " · " + s.hostName + " · " + s.speedText());
+            VpnServer s = gateWantsConnection && currentServer != null ? currentServer : selectedServer;
+            serverInfo.setText(s == null ? "Сервер: автовыбор лучшего"
+                    : s.flag() + " " + s.countryLong + " · " + s.hostName + " · " + s.speedText());
         }
     }
 
@@ -564,9 +971,8 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     private void askNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            SharedPreferences p = getPreferences(MODE_PRIVATE);
-            if (!p.getBoolean("asked_notif", false)) {
-                p.edit().putBoolean("asked_notif", true).apply();
+            if (!prefs.getBoolean("asked_notif", false)) {
+                prefs.edit().putBoolean("asked_notif", true).apply();
                 requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
             }
         }

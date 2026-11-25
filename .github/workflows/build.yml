@@ -34,6 +34,15 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
+      - name: Download Xray-core library (AndroidLibXrayLite)
+        env:
+          XRAY_LIB_VERSION: v26.11.9
+        run: |
+          mkdir -p main/libs
+          curl -fsSL --retry 3 -o main/libs/libv2ray.aar \
+            "https://github.com/2dust/AndroidLibXrayLite/releases/download/${XRAY_LIB_VERSION}/libv2ray.aar"
+          ls -la main/libs
+
       - name: Build FreeVPN
         run: ./gradlew :main:assembleSkeletonOvpn2Release
 

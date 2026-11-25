@@ -1,7 +1,13 @@
 # FreeVPN
 
-Android-приложение VPN, которое подключается к **бесплатным серверам VPN Gate**
-(сеть добровольцев, которую ведёт Университет Цукубы, Япония — https://www.vpngate.net).
+Android-приложение VPN с двумя режимами:
+
+- **VLESS · для 4G** — движок Xray-core (VLESS/Trojan + TLS/Reality/XHTTP), трафик выглядит как обычный HTTPS,
+  поэтому проходит там, где оператор режет обычные VPN. Бесплатные ключи берутся из публичной подборки
+  [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia); свой сервер добавляется
+  кнопкой «＋ Ключ» (вставить ссылку `vless://…`).
+- **VPN Gate · Wi-Fi** — OpenVPN к **бесплатным серверам VPN Gate**
+  (сеть добровольцев, которую ведёт Университет Цукубы, Япония — https://www.vpngate.net).
 
 ## Что умеет
 - Загружает свежий список бесплатных серверов VPN Gate (с флагами стран, скоростью, пингом).
@@ -15,6 +21,14 @@ Android-приложение VPN, которое подключается к **�
 Каждый push в `main` собирает APK через GitHub Actions.
 Готовый файл: **Releases → latest → FreeVPN.apk**
 (https://github.com/revgiler-arch/FreeVPN/releases/latest).
+
+## Режим VLESS
+- «Подключить» параллельно проверяет ключи (12 одновременно) и подключается к первому рабочему;
+  если ключ перестал работать — сам берёт следующий.
+- Долгое нажатие на ключ — скопировать его; на свой ключ — удалить.
+- Бесплатные ключи публичные: владельцы серверов неизвестны и могут видеть, куда идёт трафик.
+  Для важного используй свой сервер.
+- Движок: [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite) (`libv2ray.aar`, качается в CI).
 
 ## Устройство
 - VPN-ядро — [OpenVPN for Android (ics-openvpn)](https://github.com/schwabe/ics-openvpn)

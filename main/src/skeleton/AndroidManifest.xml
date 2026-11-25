@@ -28,6 +28,19 @@
             </intent-filter>
         </activity>
 
+        <service
+            android:name="com.revgiler.freevpn.XrayVpnService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
+
         <activity
                 android:exported="true"
             android:name=".activities.NotImplemented"

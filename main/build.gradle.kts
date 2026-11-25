@@ -35,11 +35,16 @@ android {
     defaultConfig {
         // FreeVPN: own package name so it can be installed next to "OpenVPN for Android"
         applicationId = "com.revgiler.freevpn"
-        minSdk = 23
+        // 24: required by the Xray-core library (libv2ray.aar)
+        minSdk = 24
         targetSdk = 37
+        // Phones only (also keeps the APK and the native build small)
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
         //targetSdkPreview = "UpsideDownCake"
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.1.0"
         externalNativeBuild {
             cmake {
                 //arguments+= "-DCMAKE_VERBOSE_MAKEFILE=1"
@@ -288,6 +293,9 @@ dependencies {
     uiImplementation(libs.kotlin)
     uiImplementation(libs.mpandroidchart)
     uiImplementation(libs.square.okhttp)
+
+    // FreeVPN: Xray-core for Android (github.com/2dust/AndroidLibXrayLite), downloaded by CI into main/libs
+    add("skeletonImplementation", files("libs/libv2ray.aar"))
 
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.junit)
