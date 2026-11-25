@@ -31,3 +31,4 @@ idir
 
 test.local.conf
 .kotlin
+main/src/skeleton/assets/vless_builtin.txt

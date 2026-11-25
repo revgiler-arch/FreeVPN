@@ -43,6 +43,14 @@ jobs:
             "https://github.com/2dust/AndroidLibXrayLite/releases/download/${XRAY_LIB_VERSION}/libv2ray.aar"
           ls -la main/libs
 
+      - name: Pack current free keys into the APK (fallback when every source is blocked)
+        run: |
+          mkdir -p main/src/skeleton/assets
+          curl -fsSL --retry 3 --max-time 60 -o main/src/skeleton/assets/vless_builtin.txt \
+            https://raw.githubusercontent.com/revgiler-arch/FreeVPN/servers/vless.txt \
+            || echo "" > main/src/skeleton/assets/vless_builtin.txt
+          echo "Built-in keys: $(grep -c '://' main/src/skeleton/assets/vless_builtin.txt || true)"
+
       - name: Build FreeVPN
         run: ./gradlew :main:assembleSkeletonOvpn2Release
 
