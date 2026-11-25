@@ -169,7 +169,8 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         listHint.setText("Загрузка серверов…");
         io.execute(() -> {
             try {
-                VpnGateApi.Result r = VpnGateApi.load(getApplicationContext());
+                VpnGateApi.Result r = VpnGateApi.load(getApplicationContext(), (n, total) ->
+                        ui.post(() -> listHint.setText("Загрузка серверов… (источник " + n + " из " + total + ")")));
                 ui.post(() -> {
                     allServers.clear();
                     allServers.addAll(r.servers);
@@ -179,7 +180,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                             + "Серверов: " + shownServers.size()
                             + ". Нажми на сервер, чтобы выбрать, или просто «Подключить» — выберу лучший.");
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 ui.post(() -> listHint.setText("Не удалось загрузить список: " + e.getMessage()
                         + "\nПроверь интернет и нажми «Обновить»."));
             }

@@ -25,9 +25,22 @@ import java.util.List;
  * last column holds a ready-to-use OpenVPN config, base64-encoded.
  */
 public class VpnGateApi {
+    /**
+     * Sources, tried in order. The first two are copies of the VPN Gate list that our
+     * GitHub Action refreshes every 30 minutes ("servers" branch): GitHub is reachable
+     * on networks where vpngate.net is blocked or very slow. Then VPN Gate itself.
+     */
     private static final String[] URLS = {
+            "https://raw.githubusercontent.com/revgiler-arch/FreeVPN/servers/servers.csv",
+            "https://cdn.jsdelivr.net/gh/revgiler-arch/FreeVPN@servers/servers.csv",
             "https://www.vpngate.net/api/iphone/",
     };
+    /** Hard limit for one source, so a stalled connection can't hang the list forever. */
+    private static final long SOURCE_DEADLINE_MS = 25_000;
+
+    public interface Progress {
+        void onSource(int index, int total);
+    }
     private static final String CACHE_FILE = "vpngate_cache.csv";
 
     public static class Result {
@@ -41,9 +54,11 @@ public class VpnGateApi {
     }
 
     /** Network first; if that fails, the last list that worked. Runs on a background thread. */
-    public static Result load(Context ctx) throws IOException {
+    public static Result load(Context ctx, Progress progress) throws IOException {
         IOException lastError = null;
-        for (String u : URLS) {
+        for (int i = 0; i < URLS.length; i++) {
+            String u = URLS[i];
+            if (progress != null) progress.onSource(i + 1, URLS.length);
             try {
                 String csv = download(u);
                 List<VpnServer> list = parse(csv);
@@ -64,14 +79,27 @@ public class VpnGateApi {
     }
 
     private static String download(String url) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
+        final HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
         c.setRequestProperty("User-Agent", "FreeVPN-Android");
+        // Watchdog: some networks accept the connection and then just stall.
+        Thread watchdog = new Thread(() -> {
+            try {
+                Thread.sleep(SOURCE_DEADLINE_MS);
+                c.disconnect();
+            } catch (InterruptedException ignored) {
+            }
+        });
+        watchdog.setDaemon(true);
+        watchdog.start();
         try {
             if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
             return readAll(c.getInputStream());
+        } catch (RuntimeException e) {
+            throw new IOException("Соединение прервано", e);
         } finally {
+            watchdog.interrupt();
             c.disconnect();
         }
     }

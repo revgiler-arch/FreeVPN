@@ -18,6 +18,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Same signing key every build (so updates install over the old app)
+        run: mkdir -p ~/.android && cp ci/debug.keystore ~/.android/debug.keystore
+
       - name: Set up JDK
         uses: actions/setup-java@v6
         with:
