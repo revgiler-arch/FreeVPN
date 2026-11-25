@@ -2,6 +2,8 @@ package com.revgiler.freevpn;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -23,6 +25,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
 import android.widget.ListView;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -41,6 +44,7 @@ import de.blinkt.openvpn.VpnProfile;
 import de.blinkt.openvpn.core.ConfigParser;
 import de.blinkt.openvpn.core.ConnectionStatus;
 import de.blinkt.openvpn.core.IOpenVPNServiceInternal;
+import de.blinkt.openvpn.core.LogItem;
 import de.blinkt.openvpn.core.OpenVPNService;
 import de.blinkt.openvpn.core.ProfileManager;
 import de.blinkt.openvpn.core.VPNLaunchHelper;
@@ -50,7 +54,8 @@ import de.blinkt.openvpn.core.VpnStatus;
  * FreeVPN main screen: list of free VPN Gate servers, one big connect button,
  * automatic switch to the next server when a free server does not answer.
  */
-public class MainActivity extends Activity implements VpnStatus.StateListener, VpnStatus.ByteCountListener {
+public class MainActivity extends Activity implements VpnStatus.StateListener, VpnStatus.ByteCountListener,
+        VpnStatus.LogListener {
 
     private static final String PROFILE_PREFIX = "FreeVPN: ";
     private static final int REQ_VPN_PERMISSION = 70;
@@ -58,6 +63,9 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     /** How long a free server gets to connect before we try the next one. */
     private static final long ATTEMPT_TIMEOUT_MS = 20_000;
     private static final int MAX_ATTEMPTS = 8;
+    /** If the server has not answered at all after this long, it is probably unreachable. */
+    private static final long NO_REPLY_TIMEOUT_MS = 10_000;
+    private static final int LOG_LINES = 120;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -66,6 +74,9 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
     private TextView connectText, statusText, serverInfo, trafficText, listHint;
     private Spinner countrySpinner;
     private ListView serverList;
+    private TextView logView, logToggle;
+    private ScrollView logScroll;
+    private final java.util.ArrayDeque<String> logLines = new java.util.ArrayDeque<>();
 
     private final List<VpnServer> allServers = new ArrayList<>();
     private final List<VpnServer> shownServers = new ArrayList<>();
@@ -93,6 +104,12 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         }
     };
 
+    private final Runnable noReplyTimeout = () -> {
+        if (userWantsConnection && lastLevel == ConnectionStatus.LEVEL_CONNECTING_NO_SERVER_REPLY_YET) {
+            tryNextServer("Сервер недоступен");
+        }
+    };
+
     private final Runnable attemptTimeout = () -> {
         if (userWantsConnection && lastLevel != ConnectionStatus.LEVEL_CONNECTED) {
             tryNextServer("Сервер не ответил");
@@ -112,6 +129,23 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         listHint = findViewById(R.id.fv_list_hint);
         countrySpinner = findViewById(R.id.fv_country);
         serverList = findViewById(R.id.fv_servers);
+        logView = findViewById(R.id.fv_log);
+        logToggle = findViewById(R.id.fv_log_toggle);
+        logScroll = findViewById(R.id.fv_log_scroll);
+        logToggle.setOnClickListener(v -> {
+            boolean show = logScroll.getVisibility() != View.VISIBLE;
+            logScroll.setVisibility(show ? View.VISIBLE : View.GONE);
+            logToggle.setText(show ? "Журнал ▴  (долгое нажатие — копировать)" : "Журнал ▾");
+            if (show) logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+        });
+        logToggle.setOnLongClickListener(v -> {
+            copyLog();
+            return true;
+        });
+        logView.setOnLongClickListener(v -> {
+            copyLog();
+            return true;
+        });
 
         adapter = new ServerAdapter();
         serverList.setAdapter(adapter);
@@ -142,12 +176,18 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
         VpnStatus.addStateListener(this);
         VpnStatus.addByteCountListener(this);
+        logLines.clear();
+        LogItem[] buffer = VpnStatus.getlogbuffer();
+        for (int i = Math.max(0, buffer.length - LOG_LINES); i < buffer.length; i++) addLogLine(buffer[i]);
+        renderLog();
+        VpnStatus.addLogListener(this);
     }
 
     @Override
     protected void onStop() {
         VpnStatus.removeStateListener(this);
         VpnStatus.removeByteCountListener(this);
+        VpnStatus.removeLogListener(this);
         try {
             unbindService(serviceConnection);
         } catch (IllegalArgumentException ignored) {
@@ -324,6 +364,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
 
     private void tryNextServer(String reasonForSkip) {
         ui.removeCallbacks(attemptTimeout);
+        ui.removeCallbacks(noReplyTimeout);
         if (!userWantsConnection) return;
         if (queue.isEmpty()) {
             userWantsConnection = false;
@@ -345,6 +386,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             updateServerInfo();
             renderButton(ConnectionStatus.LEVEL_START);
             ui.postDelayed(attemptTimeout, ATTEMPT_TIMEOUT_MS);
+            ui.postDelayed(noReplyTimeout, NO_REPLY_TIMEOUT_MS);
         } catch (Exception e) {
             tryNextServer("Ошибка конфигурации");
         }
@@ -372,6 +414,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         userWantsConnection = false;
         queue.clear();
         ui.removeCallbacks(attemptTimeout);
+        ui.removeCallbacks(noReplyTimeout);
         stopVpnQuietly();
         statusText.setText("Отключение…");
     }
@@ -436,6 +479,44 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
 
     @Override
     public void setConnectedVPN(String uuid) {
+    }
+
+    // ---------------------------------------------------------------- log
+
+    @Override
+    public void newLog(LogItem logItem) {
+        ui.post(() -> {
+            addLogLine(logItem);
+            renderLog();
+        });
+    }
+
+    private void addLogLine(LogItem item) {
+        if (item == null) return;
+        String text;
+        try {
+            text = item.getString(this);
+        } catch (Exception e) {
+            return;
+        }
+        String time = new java.text.SimpleDateFormat("HH:mm:ss", Locale.US).format(new java.util.Date(item.getLogtime()));
+        logLines.addLast(time + " " + text);
+        while (logLines.size() > LOG_LINES) logLines.removeFirst();
+    }
+
+    private void renderLog() {
+        StringBuilder sb = new StringBuilder();
+        for (String l : logLines) sb.append(l).append('\n');
+        logView.setText(sb);
+        if (logScroll.getVisibility() == View.VISIBLE) logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void copyLog() {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("FreeVPN log", logView.getText()));
+            Toast.makeText(this, "Журнал скопирован", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override

@@ -87,6 +87,36 @@
         android:textColor="@color/fv_muted"
         android:textSize="13sp" />
 
+    <TextView
+        android:id="@+id/fv_log_toggle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="6dp"
+        android:background="?android:attr/selectableItemBackground"
+        android:padding="6dp"
+        android:text="Журнал ▾"
+        android:textColor="@color/fv_accent"
+        android:textSize="13sp" />
+
+    <ScrollView
+        android:id="@+id/fv_log_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="170dp"
+        android:background="@color/fv_card"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/fv_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textColor="@color/fv_muted"
+            android:textIsSelectable="false"
+            android:textSize="10sp" />
+    </ScrollView>
+
     <Spinner
         android:id="@+id/fv_country"
         android:layout_width="match_parent"
