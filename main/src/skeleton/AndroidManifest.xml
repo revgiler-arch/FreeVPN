@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright (c) 2012-2019 Arne Schwabe
+  ~ Distributed under the GNU GPL v2 with additional terms. For full terms see the file doc/LICENSE.txt
+  ~
+  ~ FreeVPN: the "skeleton" flavor is the embeddable OpenVPN core without the upstream UI.
+  ~ Our own screen (com.revgiler.freevpn.MainActivity) is the launcher.
+  -->
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:icon="@drawable/freevpn_icon"
+        android:roundIcon="@drawable/freevpn_icon"
+        android:label="@string/freevpn_app_name"
+        tools:replace="android:icon,android:roundIcon,android:label"
+        tools:ignore="AllowBackup,GoogleAppIndexingWarning">
+
+        <activity
+            android:name="com.revgiler.freevpn.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/FreeVpnTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+                android:exported="true"
+            android:name=".activities.NotImplemented"
+            tools:ignore="ExportedActivity" />
+
+        <!-- Notification "open log" goes to our main screen instead of the upstream log -->
+        <activity-alias
+                android:exported="true"
+                android:name=".activities.LogWindow"
+                android:targetActivity="com.revgiler.freevpn.MainActivity"
+            />
+
+        <activity-alias
+                android:exported="true"
+                android:name=".activities.Req"
+                android:targetActivity=".activities.NotImplemented"
+                />
+
+    </application>
+
+</manifest>

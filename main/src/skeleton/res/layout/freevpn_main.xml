@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Outer frame takes the system-bar insets, inner layout keeps its own padding -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/fv_bg"
+    android:fitsSystemWindows="true">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/freevpn_app_name"
+            android:textColor="@color/fv_text"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/fv_refresh"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:padding="8dp"
+            android:text="⟳ Обновить"
+            android:textColor="@color/fv_accent"
+            android:textSize="15sp" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/fv_connect"
+        android:layout_width="170dp"
+        android:layout_height="170dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="20dp"
+        android:background="@drawable/freevpn_button_off"
+        android:clickable="true"
+        android:focusable="true">
+
+        <TextView
+            android:id="@+id/fv_connect_text"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:text="ПОДКЛЮЧИТЬ"
+            android:textColor="@color/fv_text"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/fv_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:gravity="center"
+        android:text="Не подключено"
+        android:textColor="@color/fv_text"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/fv_server_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:textColor="@color/fv_muted"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/fv_traffic"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:gravity="center"
+        android:textColor="@color/fv_muted"
+        android:textSize="13sp" />
+
+    <Spinner
+        android:id="@+id/fv_country"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="16dp"
+        android:popupBackground="@color/fv_card" />
+
+    <TextView
+        android:id="@+id/fv_list_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="6dp"
+        android:text="Загрузка серверов…"
+        android:textColor="@color/fv_muted"
+        android:textSize="12sp" />
+
+    <ListView
+        android:id="@+id/fv_servers"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:choiceMode="singleChoice"
+        android:divider="@android:color/transparent"
+        android:dividerHeight="6dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center"
+        android:text="Бесплатные серверы добровольцев VPN Gate (vpngate.net)"
+        android:textColor="@color/fv_muted"
+        android:textSize="11sp" />
+</LinearLayout>
+</FrameLayout>

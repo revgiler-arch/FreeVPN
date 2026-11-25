@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="freevpn_app_name">FreeVPN</string>
+
+    <color name="fv_bg">#0E1116</color>
+    <color name="fv_card">#171B22</color>
+    <color name="fv_text">#E8EAED</color>
+    <color name="fv_muted">#8B93A1</color>
+    <color name="fv_accent">#2ECC71</color>
+    <color name="fv_warn">#F5A623</color>
+    <color name="fv_off">#3A4150</color>
+
+    <style name="FreeVpnTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/fv_bg</item>
+        <item name="android:colorPrimary">@color/fv_bg</item>
+        <item name="android:colorPrimaryDark">@color/fv_bg</item>
+        <item name="android:colorAccent">@color/fv_accent</item>
+        <item name="android:statusBarColor">@color/fv_bg</item>
+        <item name="android:navigationBarColor">@color/fv_bg</item>
+        <item name="android:textColorPrimary">@color/fv_text</item>
+        <item name="android:textColorSecondary">@color/fv_muted</item>
+    </style>
+</resources>

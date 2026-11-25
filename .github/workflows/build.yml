@@ -1,0 +1,61 @@
+name: Build APK
+permissions:
+  contents: write
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Use debug signing (APK installs directly on the phone)
+        run: mkdir -p ~/.gradle && echo -e "icsopenvpnDebugSign=true\norg.gradle.jvmargs=-Xmx3072M" > ~/.gradle/gradle.properties
+
+      - name: Checkout with OpenVPN sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: 25
+          distribution: temurin
+          cache: gradle
+
+      - name: Install swig
+        run: sudo apt-get update && sudo apt-get install -y swig
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build FreeVPN
+        run: ./gradlew :main:assembleSkeletonOvpn2Release
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          APK=$(find main/build/outputs/apk -name "*.apk" | grep -i universal | head -n1)
+          [ -z "$APK" ] && APK=$(find main/build/outputs/apk -name "*.apk" | head -n1)
+          echo "Found: $APK"
+          cp "$APK" out/FreeVPN.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeVPN-apk
+          path: out/FreeVPN.apk
+
+      - name: Publish to "latest" release (easy download from the phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: FreeVPN (последняя сборка)
+          prerelease: false
+          make_latest: true
+          files: out/FreeVPN.apk
+          body: |
+            Автосборка из ветки main, коммит ${{ github.sha }}.
+            Скачай FreeVPN.apk на телефон и установи (разреши установку из неизвестных источников).
