@@ -29,6 +29,16 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/fv_settings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:padding="8dp"
+            android:text="⚙"
+            android:textColor="@color/fv_accent"
+            android:textSize="18sp" />
+
+        <TextView
             android:id="@+id/fv_add_key"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

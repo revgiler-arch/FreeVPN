@@ -13,6 +13,14 @@
     <!-- self-update from GitHub Releases -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- list launcher apps for "apps without VPN" -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:icon="@drawable/freevpn_icon"
         android:roundIcon="@drawable/freevpn_icon"
@@ -30,6 +38,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name="com.revgiler.freevpn.VpnTileService"
+            android:exported="true"
+            android:icon="@drawable/freevpn_tile"
+            android:label="FreeVPN"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="false" />
+        </service>
 
         <receiver
             android:name="com.revgiler.freevpn.Updater$InstallReceiver"

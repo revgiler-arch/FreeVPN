@@ -173,6 +173,7 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         connectButton.setOnClickListener(v -> onConnectClicked());
         findViewById(R.id.fv_refresh).setOnClickListener(v -> loadCurrent());
         addKey.setOnClickListener(v -> showAddKeyDialog());
+        findViewById(R.id.fv_settings).setOnClickListener(v -> showSettings());
         tabVless.setOnClickListener(v -> switchMode(MODE_VLESS));
         tabGate.setOnClickListener(v -> switchMode(MODE_GATE));
 
@@ -491,6 +492,91 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                 .show();
     }
 
+    // =================================================================== settings
+
+    private void showSettings() {
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad / 2, pad, 0);
+
+        android.widget.CheckBox ru = new android.widget.CheckBox(this);
+        ru.setText("Российские сайты напрямую\n(.ru, .рф, Яндекс, VK, банки — без VPN; только VLESS)");
+        ru.setChecked(FvSettings.ruDirect(this));
+        box.addView(ru);
+
+        android.widget.CheckBox dpi = new android.widget.CheckBox(this);
+        dpi.setText("Обход DPI\n(режет начало соединения на кусочки; включи, если ключи не отвечают)");
+        dpi.setChecked(FvSettings.antiDpi(this));
+        box.addView(dpi);
+
+        android.widget.Button apps = new android.widget.Button(this);
+        apps.setText("Приложения без VPN (" + FvSettings.excludedApps(this).size() + ")");
+        apps.setOnClickListener(v -> showAppPicker(apps));
+        box.addView(apps);
+
+        TextView note = new TextView(this);
+        note.setText("\nЕсли ключ перестанет работать, приложение само переключится на запасной.\n"
+                + "Плитка «FreeVPN» есть в шторке: Быстрые настройки → карандаш → перетащи плитку.");
+        note.setTextSize(12);
+        box.addView(note);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Настройки")
+                .setView(box)
+                .setPositiveButton("Готово", (d, w) -> {
+                    boolean changed = ru.isChecked() != FvSettings.ruDirect(this)
+                            || dpi.isChecked() != FvSettings.antiDpi(this);
+                    FvSettings.setRuDirect(this, ru.isChecked());
+                    FvSettings.setAntiDpi(this, dpi.isChecked());
+                    if (changed) {
+                        // test results depend on these settings
+                        for (XrayLink k : keys) k.delayMs = 0;
+                        working.clear();
+                        adapter.notifyDataSetChanged();
+                    }
+                    if (anythingActive()) {
+                        Toast.makeText(this, "Применится при следующем подключении", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .show();
+    }
+
+    private void showAppPicker(android.widget.Button counter) {
+        Toast.makeText(this, "Загружаю список приложений…", Toast.LENGTH_SHORT).show();
+        io.execute(() -> {
+            PackageManager pm = getPackageManager();
+            Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+            java.util.TreeMap<String, String> byLabel = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            for (android.content.pm.ResolveInfo ri : pm.queryIntentActivities(launcher, 0)) {
+                String pkg = ri.activityInfo.packageName;
+                if (pkg.equals(getPackageName())) continue;
+                byLabel.put(ri.loadLabel(pm).toString() + "\u0000" + pkg, pkg);
+            }
+            List<String> labels = new ArrayList<>();
+            List<String> pkgs = new ArrayList<>();
+            for (Map.Entry<String, String> e : byLabel.entrySet()) {
+                labels.add(e.getKey().substring(0, e.getKey().indexOf('\u0000')));
+                pkgs.add(e.getValue());
+            }
+            java.util.Set<String> chosen = FvSettings.excludedApps(this);
+            boolean[] checked = new boolean[pkgs.size()];
+            for (int i = 0; i < pkgs.size(); i++) checked[i] = chosen.contains(pkgs.get(i));
+            ui.post(() -> new AlertDialog.Builder(this)
+                    .setTitle("Эти приложения работают без VPN")
+                    .setMultiChoiceItems(labels.toArray(new String[0]), checked, (d, which, isChecked) -> {
+                        if (isChecked) chosen.add(pkgs.get(which));
+                        else chosen.remove(pkgs.get(which));
+                    })
+                    .setPositiveButton("Сохранить", (d, w) -> {
+                        FvSettings.setExcludedApps(this, chosen);
+                        counter.setText("Приложения без VPN (" + chosen.size() + ")");
+                    })
+                    .setNegativeButton("Отмена", null)
+                    .show());
+        });
+    }
+
     // =================================================================== VLESS: connect
 
     private void startVless() {
@@ -545,7 +631,8 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
                 if (found.get() || gen != searchGeneration) return;
                 long delay;
                 try {
-                    delay = Libv2ray.measureOutboundDelay(XrayConfig.forTest(k), XrayConfig.TEST_URL);
+                    delay = Libv2ray.measureOutboundDelay(XrayConfig.forTest(getApplicationContext(), k),
+                            XrayConfig.TEST_URL);
                 } catch (Throwable e) {
                     delay = -1;
                 }
@@ -583,7 +670,18 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         currentKey = k;
         try {
             stopGateQuietly();
-            XrayVpnService.start(this, XrayConfig.forVpn(k), k.name);
+            // The chosen key first, then other proven keys as automatic fallbacks.
+            ArrayList<String> configs = new ArrayList<>();
+            ArrayList<String> names = new ArrayList<>();
+            configs.add(XrayConfig.forVpn(this, k));
+            names.add(k.name);
+            for (XrayLink w : working) {
+                if (configs.size() >= 6) break;
+                if (w == k) continue;
+                configs.add(XrayConfig.forVpn(this, w));
+                names.add(w.name);
+            }
+            XrayVpnService.start(this, configs, names);
             statusText.setText("Подключение…");
             updateServerInfo();
         } catch (Exception e) {
@@ -600,10 +698,13 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
             switch (state) {
                 case CONNECTING:
                     statusText.setText(message);
+                    XrayLink now2 = findKeyByName(XrayVpnService.getServerName());
+                    if (now2 != null) currentKey = now2;
                     break;
                 case CONNECTED:
                     vlessWantsConnection = true;
-                    if (currentKey == null) currentKey = findKeyByName(XrayVpnService.getServerName());
+                    XrayLink now = findKeyByName(XrayVpnService.getServerName());
+                    if (now != null) currentKey = now;
                     statusText.setText("✅ Подключено · " + message);
                     break;
                 case FAILED:
@@ -835,6 +936,9 @@ public class MainActivity extends Activity implements VpnStatus.StateListener, V
         parser.parseConfig(new StringReader(VpnGateApi.config(s)));
         VpnProfile profile = parser.convertProfile();
         profile.mName = PROFILE_PREFIX + s.countryLong + " " + s.hostName;
+        // apps the user wants outside the VPN
+        profile.mAllowedAppsVpn = new java.util.HashSet<>(FvSettings.excludedApps(this));
+        profile.mAllowedAppsVpnAreDisallowed = true;
 
         ProfileManager pm = ProfileManager.getInstance(this);
         for (VpnProfile old : new ArrayList<>(pm.getProfiles())) {
