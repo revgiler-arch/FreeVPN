@@ -43,8 +43,8 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
         //targetSdkPreview = "UpsideDownCake"
-        versionCode = 8
-        versionName = "1.4.0"
+        versionCode = 9
+        versionName = "1.4.1"
         externalNativeBuild {
             cmake {
                 //arguments+= "-DCMAKE_VERBOSE_MAKEFILE=1"

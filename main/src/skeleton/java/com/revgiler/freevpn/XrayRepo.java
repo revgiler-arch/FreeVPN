@@ -32,6 +32,7 @@ public class XrayRepo {
     private static final String IGARECK_BB = "https://bitbucket.org/igareck/vpn-configs-for-russia/raw/main/";
     private static final String WHITE = "Vless-Reality-White-Lists-Rus-Mobile.txt";
     private static final String BLACK = "BLACK_VLESS_RUS_mobile.txt";
+    private static final String WHITE_ALL = "WHITE-CIDR-RU-all.txt";
     private static final String MIXED = "BLACK_SS%2BAll_RUS.txt";
 
     /** Yandex Translate opens any page through its own servers; it stays reachable under Russian "white lists". */
@@ -54,6 +55,8 @@ public class XrayRepo {
                     viaYandex(MIRROR)},
             // the original collection – white list keys (Russian IPs, for mobile "white lists")
             {IGARECK_GH + WHITE, viaYandex(IGARECK_BB + WHITE), "https://raw.githack.com/igareck/vpn-configs-for-russia/main/" + WHITE},
+            // more white list keys (all CIDR-whitelisted servers)
+            {IGARECK_GH + WHITE_ALL, viaYandex(IGARECK_BB + WHITE_ALL), "https://raw.githack.com/igareck/vpn-configs-for-russia/main/" + WHITE_ALL},
             // black list keys
             {IGARECK_GH + BLACK, viaYandex(IGARECK_BB + BLACK), "https://raw.githack.com/igareck/vpn-configs-for-russia/main/" + BLACK},
             // VMess / Trojan keys
